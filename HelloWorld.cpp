@@ -5,6 +5,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
+#include <llvm/Transforms/Utils/Local.h>
 #include <iostream>
 
 using namespace llvm;
@@ -39,12 +40,27 @@ namespace obfs {
 
             // thanks Romain!
             SmallVector<BasicBlock*, 20> flattenedBB;
+            // demote PHI nodes
+            //size_t count = 0;
+            std::vector<PHINode*> phiNodes;
+            do {
+              phiNodes.clear();
+              for (auto& BB : F) {
+                for (auto& I : BB.phis()) {
+                  phiNodes.push_back(&I);
+                }
+              }
+              //count += phiNodes.size();
+              for (PHINode* phi : phiNodes) {
+                DemotePHIToStack(phi, F.begin()->getTerminator());
+              }
+            } while (!phiNodes.empty());
 
             for (BasicBlock& BB : F) {
-              if (&BB == &EntryBlock) {
-                outs() << "Not flattening entry block " << getSimpleNodeLabel(&BB) << "\n";
-                continue;
-              }
+              // if (&BB == &EntryBlock) {
+              //   outs() << "Not flattening entry block " << getSimpleNodeLabel(&BB) << "\n";
+              //   continue;
+              // }
               outs() << "Adding block to flatten: " << getSimpleNodeLabel(&BB) << "\n";
               flattenedBB.push_back(&BB);
             }
@@ -68,7 +84,7 @@ namespace obfs {
                   BasicBlock *Successor = br->getSuccessor(i);
                   outs() << "Successor: " << getSimpleNodeLabel(Successor) << "\n";
                   // ok here we can add a block in the middle
-                  BasicBlock *NewBlock = BasicBlock::Create(F.getContext(), "", &F, pToflatBB);
+                  BasicBlock *NewBlock = BasicBlock::Create(F.getContext(), "", &F);
 
                   // Increment the counter in the new block
                   IRBuilder<> Builder(NewBlock);
@@ -79,6 +95,9 @@ namespace obfs {
 
                   // Modify the existing terminator to point to the new block
                   br->setSuccessor(i, NewBlock);
+                  
+                  // move after our block
+                  NewBlock->moveAfter(pToflatBB);
                 }
               }
             }
