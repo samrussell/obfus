@@ -6,6 +6,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IRBuilder.h"
 #include <llvm/Transforms/Utils/Local.h>
+#include <llvm/Transforms/Utils/BasicBlockUtils.h>
 #include <iostream>
 
 using namespace llvm;
@@ -87,8 +88,8 @@ namespace obfs {
 
                 IRBuilder<> EntryBuilder(&(F.getEntryBlock()), F.getEntryBlock().begin());
                 Type *Int32Ty = IntegerType::get(F.getContext(), 32);
-                AllocaInst *Counter = EntryBuilder.CreateAlloca(Int32Ty, nullptr, "counter");
-                EntryBuilder.CreateStore(ConstantInt::get(Int32Ty, 0), Counter);
+                AllocaInst *DispatchVar = EntryBuilder.CreateAlloca(Int32Ty, nullptr, "dispatch_var");
+                EntryBuilder.CreateStore(ConstantInt::get(Int32Ty, 0x1001), DispatchVar);
 
                 // SR phase 2: add dispatch
                 // split first block so we can treat it like any other
@@ -101,14 +102,15 @@ namespace obfs {
                 // we'll add our dispatch block after the entry block
                 BasicBlock* DispatchBlock = BasicBlock::Create(F.getContext(), "dispatch_block", &F);
 
-                // get the successort from the new entry block
+                // get the successor from the new entry block
                 auto* br = dyn_cast<BranchInst>(pNewEntryBlock->getTerminator());
                 BasicBlock *Successor = br->getSuccessor(0);
 
+                // add a load before this
+                IRBuilder<> DispatchBuilder(br);
+                LoadInst* loadSwitchVar = DispatchBuilder.CreateLoad(DispatchBuilder.getInt32Ty(), DispatchVar, "dispatch_var");
+
                 IRBuilder<> EntryBuilder2(DispatchBlock, DispatchBlock->begin());
-                Type *Int32Ty2 = IntegerType::get(F.getContext(), 32);
-                AllocaInst *DispatchVar = EntryBuilder2.CreateAlloca(Int32Ty2, nullptr, "dispatch_var");
-                EntryBuilder2.CreateStore(ConstantInt::get(Int32Ty2, 0x1001), DispatchVar);
                 EntryBuilder2.CreateBr(Successor);
 
                 // Modify the existing terminator to point to the new block
@@ -122,29 +124,37 @@ namespace obfs {
 
                 // SR phase 2 end
 
+                int dispatchVal = 0x1001;
+
                 for (BasicBlock* pToflatBB : flattenedBB){
                     // only handle branches for now
                     outs() << "Flattening block " << getSimpleNodeLabel(pToflatBB) << "\n";
                     if (auto* br = dyn_cast<BranchInst>(pToflatBB->getTerminator())) {
                         // we'll just print them out
                         for (unsigned i = 0; i < br->getNumSuccessors(); ++i) {
-                        BasicBlock *Successor = br->getSuccessor(i);
-                        outs() << "Successor: " << getSimpleNodeLabel(Successor) << "\n";
-                        // ok here we can add a block in the middle
-                        BasicBlock *NewBlock = BasicBlock::Create(F.getContext(), "", &F);
+                            BasicBlock *Successor = br->getSuccessor(i);
+                            outs() << "Successor: " << getSimpleNodeLabel(Successor) << "\n";
+                            // ok here we can add a block in the middle
+                            BasicBlock *NewBlock = BasicBlock::Create(F.getContext(), "", &F);
 
-                        // Increment the counter in the new block
-                        IRBuilder<> Builder(NewBlock);
-                        LoadInst *LoadedCounter = Builder.CreateLoad(Int32Ty, Counter);
-                        Value *IncrementedCounter = Builder.CreateAdd(LoadedCounter, ConstantInt::get(Int32Ty, 1));
-                        Builder.CreateStore(IncrementedCounter, Counter);
-                        Builder.CreateBr(Successor);
+                            // Increment the counter in the new block
+                            IRBuilder<> Builder(NewBlock);
+                            Builder.CreateStore(ConstantInt::get(Int32Ty, ++dispatchVal), DispatchVar);
+                            //Builder.CreateBr(Successor);
+                            // jump to the dispatcher
+                            Builder.CreateBr(DispatchBlock);
 
-                        // Modify the existing terminator to point to the new block
-                        br->setSuccessor(i, NewBlock);
-                        
-                        // move after our block
-                        NewBlock->moveAfter(pToflatBB);
+                            // Add a new branch in the dispatcher to jump to the new block
+                            Instruction* FirstInst = DispatchBlock->getFirstNonPHI();
+                            IRBuilder<> DispatchBuilder(FirstInst);
+                            auto *Cond = DispatchBuilder.CreateICmpEQ(ConstantInt::get(Int32Ty, dispatchVal), loadSwitchVar);
+                            SplitBlockAndInsertIfThen(Cond, FirstInst, false, nullptr, (DomTreeUpdater *)nullptr, nullptr, Successor);
+
+                            // Modify the existing terminator to point to the new block
+                            br->setSuccessor(i, NewBlock);
+                            
+                            // move after our block
+                            NewBlock->moveAfter(pToflatBB);
                         }
                     }
                 }
