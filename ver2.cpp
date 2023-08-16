@@ -147,6 +147,11 @@ namespace obfs {
                             // Add a new branch in the dispatcher to jump to the new block
                             Instruction* FirstInst = DispatchBlock->getFirstNonPHI();
                             IRBuilder<> DispatchBuilder(FirstInst);
+
+                            // we could load in the first block but we're handling the PHI wrong
+                            // so let's just load it in each block
+                            LoadInst* loadSwitchVar = DispatchBuilder.CreateLoad(DispatchBuilder.getInt32Ty(), DispatchVar, "dispatch_var");
+                            
                             auto *Cond = DispatchBuilder.CreateICmpEQ(ConstantInt::get(Int32Ty, dispatchVal), loadSwitchVar);
                             SplitBlockAndInsertIfThen(Cond, FirstInst, false, nullptr, (DomTreeUpdater *)nullptr, nullptr, Successor);
 
